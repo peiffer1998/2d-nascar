@@ -25,6 +25,22 @@ ROLLING_START_MAX_MPH = 200
 CONTROLLED_BASE_MPH = 200
 BRAKE_MPH = 120
 TURN_PENALTY_MAX = 34
+SHOW_LANE_GUIDES = False
+TRACK_TOP_WALL_PCT = 0.075
+TRACK_DOUBLE_YELLOW_PCT = 0.615
+TRACK_APRON_PCT = 0.725
+TRACK_GROOVE_OFFSET = 0.08
+TRACK_GROOVE_THICK = 0.035
+# --- UI layout (DM2-style) ---
+TOP_BAR_HEIGHT = 72
+HUD_BLOCK_HEIGHT = 120
+LEFT_DRAFT_WIDTH = 84
+LEFT_DRAFT_EXTRA = 18
+HUD_BOTTOM_MARGIN = 12
+SEGMENT_COUNT = 20
+SEGMENT_HEIGHT = 16
+SEGMENT_GAP = 6
+TICK_COUNT = 18
 # --- UI (TITLE) ---
 TITLE_BUTTONS = ("Quick Race", "Settings", "Exit")
 BUTTON_W, BUTTON_H = 320, 68
@@ -312,85 +328,392 @@ def build_speed_ribbons(track_bounds):
     return [SpeedRibbon(track_bounds) for _ in range(SPEED_RIBBON_COUNT)]
 
 
-def draw_track(surface, lane_positions, lane_height, lane_spacing, lane_count, scroll, ribbons):
-    surface.fill((4, 6, 12))
-    gradient = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    for y in range(SCREEN_HEIGHT):
-        ratio = y / SCREEN_HEIGHT
-        shade = int(14 + ratio * 28)
-        pygame.draw.line(gradient, (shade, shade, shade + 12, 85), (0, y), (SCREEN_WIDTH, y))
+def draw_asphalt_background(surface):
+    width, height = surface.get_size()
+    gradient = pygame.Surface((width, height))
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        if ratio < 0.6:
+            t = ratio / 0.6
+            start = (106, 110, 120)
+            end = (92, 96, 105)
+        else:
+            t = (ratio - 0.6) / 0.4
+            start = (92, 96, 105)
+            end = (88, 92, 101)
+        r = int(start[0] + (end[0] - start[0]) * t)
+        g = int(start[1] + (end[1] - start[1]) * t)
+        b = int(start[2] + (end[2] - start[2]) * t)
+        pygame.draw.line(gradient, (r, g, b), (0, y), (width, y))
     surface.blit(gradient, (0, 0))
-    if not lane_positions:
-        return pygame.Rect(0, 0, 0, 0)
+    speckle = pygame.Surface((width, height), pygame.SRCALPHA)
+    step = 4
+    for y in range(0, height, step):
+        for x in range(0, width, step):
+            v = (x * 73856093 ^ y * 19349663) & 15
+            if v == 0:
+                continue
+            alpha = int((v / 15) * 60)
+            speckle.fill((30, 30, 30, alpha), (x, y, step, step))
+    surface.blit(speckle, (0, 0))
+
+
+def draw_stands_section(surface, track_top):
+    stand_top = max(0, track_top - 60)
+    pygame.draw.rect(surface, (183, 188, 199), (0, stand_top, SCREEN_WIDTH, 10))
+    pygame.draw.rect(surface, (140, 146, 160), (0, stand_top + 10, SCREEN_WIDTH, 8))
+    limit = max(0, stand_top - 6)
+    for y in range(0, limit, 4):
+        for x in range(0, SCREEN_WIDTH, 6):
+            r = (x * 1103515245 + y * 12345) & 0xFFFFFFFF
+            if (r & 7) != 0:
+                continue
+            colors = [
+                (231, 76, 60),
+                (52, 152, 219),
+                (241, 196, 15),
+                (46, 204, 113),
+                (236, 240, 241),
+                (155, 89, 182),
+            ]
+            color = colors[r % len(colors)]
+            surface.fill(color, (x, y, 2, 2))
+
+
+def draw_racing_surface(surface, track_rect, lane_positions):
+    if track_rect.height <= 0:
+        return
+    width = track_rect.width
+    height = track_rect.height
+    track_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        shade = int(70 + ratio * 40)
+        pygame.draw.line(track_surface, (shade, shade, min(shade + 12, 255)), (0, y), (width, y))
+    surface.blit(track_surface, track_rect.topleft)
+    y_yellow = clamp(track_rect.top + int(height * TRACK_DOUBLE_YELLOW_PCT), track_rect.top + 4, track_rect.bottom - 4)
+    pygame.draw.rect(surface, (246, 194, 28), (0, y_yellow - 4, width, 3))
+    pygame.draw.rect(surface, (246, 194, 28), (0, y_yellow + 3, width, 3))
+    groove_y = max(track_rect.top + 4, y_yellow - int(height * TRACK_GROOVE_OFFSET))
+    groove_height = max(2, int(height * TRACK_GROOVE_THICK))
+    groove_height = min(groove_height, max(1, track_rect.bottom - groove_y))
+    groove_surface = pygame.Surface((width, groove_height), pygame.SRCALPHA)
+    for gy in range(groove_height):
+        t = gy / max(1, groove_height - 1)
+        if t < 0.2:
+            alpha = int(18 * (t / 0.2))
+        elif t > 0.8:
+            alpha = int(18 * ((1 - t) / 0.2))
+        else:
+            alpha = 18
+        pygame.draw.line(groove_surface, (0, 0, 0, alpha), (0, gy), (width, gy))
+    surface.blit(groove_surface, (0, groove_y))
+    apron_y = clamp(track_rect.top + int(height * TRACK_APRON_PCT), track_rect.top + 4, track_rect.bottom)
+    pygame.draw.rect(surface, (232, 236, 242), (0, apron_y, width, 3))
+    apron_top = apron_y + 3
+    if apron_top < track_rect.bottom:
+        apron_height = track_rect.bottom - apron_top
+        apron_surface = pygame.Surface((width, apron_height), pygame.SRCALPHA)
+        start_color = (29, 111, 49)
+        end_color = (24, 90, 41)
+        for ay in range(apron_height):
+            t = ay / max(1, apron_height - 1)
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * t)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * t)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * t)
+            pygame.draw.line(apron_surface, (r, g, b), (0, ay), (width, ay))
+        surface.blit(apron_surface, (0, apron_top))
+    if SHOW_LANE_GUIDES and lane_positions:
+        guide_color = (230, 238, 246)
+        dash_len = 12
+        dash_gap = 8
+        for lane_y in lane_positions:
+            if lane_y < track_rect.top or lane_y > track_rect.bottom:
+                continue
+            y_pos = int(lane_y)
+            x = 0
+            while x < width:
+                x_end = min(width, x + dash_len)
+                pygame.draw.line(surface, guide_color, (x, y_pos), (x_end, y_pos), 2)
+                x += dash_len + dash_gap
+
+
+def draw_track(surface, lane_positions, lane_height, lane_spacing, lane_count, scroll, ribbons):
+    draw_asphalt_background(surface)
     track_top, track_bottom = compute_track_bounds(lane_positions, lane_height, lane_spacing)
-    track_rect = pygame.Rect(0, track_top, SCREEN_WIDTH, track_bottom - track_top)
-    asphalt = pygame.Surface((SCREEN_WIDTH, track_rect.height), pygame.SRCALPHA)
-    for y in range(0, track_rect.height, 4):
-        ratio = y / max(1, track_rect.height)
-        base = int(20 + ratio * 32)
-        pygame.draw.rect(asphalt, (base, base, base + 14), (0, y, SCREEN_WIDTH, 4))
-    surface.blit(asphalt, (0, track_top))
-    apron = track_rect.inflate(-22, -18)
-    if apron.width > 0 and apron.height > 0:
-        pygame.draw.rect(surface, (28, 34, 52), apron, width=6, border_radius=34)
-    pygame.draw.rect(surface, (10, 12, 18), (0, track_top - 40, SCREEN_WIDTH, 40))
-    pygame.draw.rect(surface, (10, 12, 18), (0, track_bottom, SCREEN_WIDTH, 40))
-    pygame.draw.rect(surface, (18, 20, 26), track_rect, border_radius=38)
-    inner_track = track_rect.inflate(-64, -64)
-    pygame.draw.rect(surface, (26, 30, 40), inner_track, border_radius=38)
-    grass_rect = inner_track.inflate(-36, -36)
-    if grass_rect.width > 0 and grass_rect.height > 0:
-        pygame.draw.rect(surface, (18, 92, 52), grass_rect, border_radius=32)
-        stripe_gap = 44
-        for offset in range(0, grass_rect.width, stripe_gap):
-            stripe_rect = pygame.Rect(grass_rect.left + offset, grass_rect.top, min(24, grass_rect.width - offset), grass_rect.height)
-            color = (16, 70, 36) if ((offset // stripe_gap) % 2 == 0) else (24, 110, 60)
-            pygame.draw.rect(surface, color, stripe_rect)
-    center_line_width = 4
-    lane_gap = lane_height + lane_spacing
-    base_y = lane_positions[0] - lane_height / 2
-    dash_length = 20
-    dash_gap = 24
-    for i in range(lane_count + 1):
-        y = int(base_y + i * lane_gap)
-        for x in range(-dash_length, SCREEN_WIDTH + dash_length, dash_length + dash_gap):
-            pygame.draw.line(surface, (180, 210, 240, 160), (x, y), (min(SCREEN_WIDTH, x + dash_length), y), center_line_width)
-    start_line_x = SCREEN_WIDTH // 2 + START_LINE_OFFSET
-    for y in range(track_top + 32, track_bottom - 32, 26):
-        rect = pygame.Rect(start_line_x, y, 12, 18)
-        pygame.draw.rect(surface, (255, 255, 255, 220), rect)
-    stand_top = track_top - 62
-    stand_bottom = track_bottom + 18
-    stand_width = 48
-    stand_gap = 12
-    for base_x in range(10, SCREEN_WIDTH - stand_width, stand_width + stand_gap):
-        stand_rect = pygame.Rect(base_x, stand_top, stand_width, 48)
-        pygame.draw.rect(surface, (16, 30, 58), stand_rect, border_radius=10)
-        pygame.draw.rect(
-            surface,
-            (34, 66, 120),
-            stand_rect.inflate(-16, -10),
-            border_radius=6,
-        )
-        stand_rect = pygame.Rect(base_x, stand_bottom, stand_width, 40)
-        pygame.draw.rect(surface, (16, 30, 58), stand_rect, border_radius=10)
-        pygame.draw.rect(
-            surface,
-            (50, 90, 150),
-            stand_rect.inflate(-14, -8),
-            border_radius=5,
-        )
+    height = max(48, track_bottom - track_top)
+    track_rect = pygame.Rect(0, track_top, SCREEN_WIDTH, height)
+    draw_stands_section(surface, track_rect.top)
+    draw_racing_surface(surface, track_rect, lane_positions)
     for ribbon in ribbons:
         ribbon.draw(surface)
-    stripe_spacing = 200
-    stripe_width = 22
-    stripe_height = track_rect.height
-    offset = (scroll * 0.4) % stripe_spacing
-    for i in range(-4, SCREEN_WIDTH // stripe_spacing + 8):
-        x = int(i * stripe_spacing + offset)
-        stripe_rect = pygame.Rect(x, track_top, stripe_width, stripe_height)
-        pygame.draw.rect(surface, (38, 58, 92), stripe_rect)
     return track_rect
+
+
+def build_leader_entries(ai_cars, sim_speed, limit=6):
+    entries = []
+    sorted_cars = sorted(ai_cars, key=lambda c: c.distance, reverse=True)
+    effective_speed = max(sim_speed, 1.0)
+    for idx, car in enumerate(sorted_cars[:limit]):
+        gap_secs = abs(car.distance) / effective_speed
+        prefix = "+" if car.distance >= 0 else "-"
+        entries.append(
+            {
+                "pos": idx + 1,
+                "car_num": car.driver.car_num,
+                "name": car.driver.driver_name,
+                "gap": f"{prefix}{gap_secs:0.3f}",
+            }
+        )
+    if not entries:
+        entries = [
+            {"pos": i + 1, "car_num": "--", "name": "None", "gap": "+0.000"} for i in range(limit)
+        ]
+    return entries
+
+
+def draw_dm2_ui(surface, fonts, data):
+    font, font_large, font_small = fonts
+    panel_color = (17, 21, 31)
+    border_color = (90, 99, 120)
+    track_text_color = (240, 245, 255)
+    lap_box_color = (54, 234, 104)
+    lap_box_border = (30, 164, 74)
+    hud_color = (11, 15, 22)
+    hud_border = (90, 99, 120)
+    caret_color = (196, 68, 68)
+    pause_color = (212, 60, 60)
+
+    top_rect = pygame.Rect(0, 0, SCREEN_WIDTH, TOP_BAR_HEIGHT)
+    pygame.draw.rect(surface, panel_color, top_rect)
+    pygame.draw.rect(surface, border_color, top_rect, 2)
+
+    brand_rect = pygame.Rect(12, 12, 200, TOP_BAR_HEIGHT - 24)
+    pygame.draw.rect(surface, (43, 47, 58), brand_rect, border_radius=8)
+    pygame.draw.rect(surface, (61, 69, 91), brand_rect, 2, border_radius=8)
+    title_rect = pygame.Rect(brand_rect.left + 4, brand_rect.top + 2, brand_rect.width - 8, 18)
+    pygame.draw.rect(surface, (225, 65, 47), title_rect, border_radius=4)
+    pygame.draw.rect(surface, (160, 39, 31), title_rect, 2, border_radius=4)
+    title_text = font_small.render("DRAFTMASTER 2", True, (25, 12, 12))
+    surface.blit(
+        title_text,
+        (title_rect.left + 6, title_rect.top + (title_rect.height - title_text.get_height()) // 2),
+    )
+    sub_text = font_small.render("ROLLING THUNDER", True, (244, 193, 27))
+    surface.blit(
+        sub_text,
+        (brand_rect.left + 6, title_rect.bottom + 2),
+    )
+
+    lap_rect = pygame.Rect(brand_rect.right + 12, 16, 170, TOP_BAR_HEIGHT - 32)
+    pygame.draw.rect(surface, lap_box_color, lap_rect, border_radius=6)
+    pygame.draw.rect(surface, lap_box_border, lap_rect, 3, border_radius=6)
+    lap_text = font_small.render(f"LAP {data['lap']} OF {data['laps_total']}", True, (7, 20, 11))
+    surface.blit(
+        lap_text,
+        (lap_rect.left + 12, lap_rect.top + (lap_rect.height - lap_text.get_height()) // 2),
+    )
+
+    track_surface = font_large.render(data["track_name"], True, track_text_color)
+    surface.blit(
+        track_surface,
+        (SCREEN_WIDTH // 2 - track_surface.get_width() // 2, 10),
+    )
+
+    control_locked = data.get("control_locked", False)
+    if control_locked:
+        rolling_text = font_small.render("Rolling start — controls locked", True, (255, 230, 200))
+        surface.blit(
+            rolling_text,
+            (SCREEN_WIDTH // 2 - rolling_text.get_width() // 2, TOP_BAR_HEIGHT + 6),
+        )
+
+    caret_size = 40
+    pause_size = 40
+    button_gap = 12
+    buttons_width = caret_size + pause_size + button_gap
+    leaders_left = lap_rect.right + 14
+    leaders_right = SCREEN_WIDTH - (buttons_width + 18)
+    leaders_width = max(160, leaders_right - leaders_left)
+    leaders_rect = pygame.Rect(leaders_left, 10, leaders_width, TOP_BAR_HEIGHT - 20)
+    pygame.draw.rect(surface, panel_color, leaders_rect)
+    pygame.draw.rect(surface, border_color, leaders_rect, 2, border_radius=8)
+
+    if data.get("leaders_collapsed"):
+        collapsed = font_small.render("LEADERS COLLAPSED", True, (177, 188, 204))
+        surface.blit(
+            collapsed,
+            (leaders_rect.left + 12, leaders_rect.centery - collapsed.get_height() // 2),
+        )
+    else:
+        entries = data.get("leaders", [])
+        if entries:
+            entry_width = max(1, leaders_rect.width // len(entries))
+            for idx, entry in enumerate(entries):
+                entry_x = leaders_rect.left + idx * entry_width + 6
+                entry_y = leaders_rect.top + 6
+                title = font_small.render(
+                    f"{entry['pos']} {entry['car_num']} {entry['name']}", True, track_text_color
+                )
+                gap = font_small.render(entry["gap"], True, (255, 236, 99))
+                surface.blit(title, (entry_x, entry_y))
+                surface.blit(gap, (entry_x, entry_y + title.get_height() + 2))
+
+    caret_rect = pygame.Rect(leaders_right + button_gap, 16, caret_size, caret_size)
+    pygame.draw.rect(surface, caret_color, caret_rect, border_radius=8)
+    pygame.draw.rect(surface, (120, 140, 190), caret_rect, 2, border_radius=8)
+    caret_points = [
+        (caret_rect.left + 12, caret_rect.top + 14),
+        (caret_rect.right - 12, caret_rect.centery),
+        (caret_rect.left + 12, caret_rect.bottom - 14),
+    ]
+    if data.get("leaders_collapsed"):
+        caret_points = [
+            (caret_rect.right - 12, caret_rect.top + 14),
+            (caret_rect.left + 12, caret_rect.centery),
+            (caret_rect.right - 12, caret_rect.bottom - 14),
+        ]
+    pygame.draw.polygon(surface, (255, 255, 255), caret_points)
+
+    pause_rect = pygame.Rect(caret_rect.right + button_gap, 16, pause_size, pause_size)
+    pause_fill = pause_color if not data.get("pause_active") else (180, 120, 70)
+    pygame.draw.rect(surface, pause_fill, pause_rect, border_radius=8)
+    pygame.draw.rect(surface, (120, 140, 190), pause_rect, 2, border_radius=8)
+    bar_width = 6
+    bar_height = 18
+    bar_y = pause_rect.centery - bar_height // 2
+    pygame.draw.rect(
+        surface,
+        (255, 255, 255) if not data.get("pause_active") else (230, 230, 230),
+        (pause_rect.left + 10, bar_y, bar_width, bar_height),
+        border_radius=2,
+    )
+    pygame.draw.rect(
+        surface,
+        (255, 255, 255) if not data.get("pause_active") else (230, 230, 230),
+        (pause_rect.right - 10 - bar_width, bar_y, bar_width, bar_height),
+        border_radius=2,
+    )
+
+    # Segments
+    seg_top = SCREEN_HEIGHT - HUD_BLOCK_HEIGHT - 24
+    seg_left = int(SCREEN_WIDTH * 0.30)
+    seg_right = SCREEN_WIDTH - seg_left
+    seg_area = seg_right - seg_left
+    seg_width = max(4, int((seg_area - (SEGMENT_COUNT - 1) * SEGMENT_GAP) / SEGMENT_COUNT))
+    if data.get("lift_active"):
+        on_ratio = 0.22
+    elif data.get("brake"):
+        on_ratio = 0.36
+    else:
+        on_ratio = 0.82
+    on_count = round(SEGMENT_COUNT * on_ratio)
+    for i in range(SEGMENT_COUNT):
+        rect = pygame.Rect(
+            seg_left + i * (seg_width + SEGMENT_GAP),
+            seg_top,
+            seg_width,
+            SEGMENT_HEIGHT,
+        )
+        color = (255, 202, 28)
+        alpha = 255 if i < on_count else 100
+        seg_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        seg_surf.fill((*color, alpha))
+        pygame.draw.rect(seg_surf, (*color, 200), seg_surf.get_rect(), border_radius=3)
+        surface.blit(seg_surf, rect.topleft)
+
+    # Ticks
+    tick_y = seg_top + SEGMENT_HEIGHT + 6
+    tick_height = 10
+    tick_spacing = seg_area / max(1, TICK_COUNT - 1)
+    for i in range(TICK_COUNT):
+        tx = int(seg_left + i * tick_spacing)
+        pygame.draw.rect(surface, (230, 181, 14), (tx, tick_y, 3, tick_height))
+
+    # Draft meter
+    draft_rect = pygame.Rect(
+        18,
+        SCREEN_HEIGHT - HUD_BLOCK_HEIGHT - LEFT_DRAFT_EXTRA - 10,
+        LEFT_DRAFT_WIDTH,
+        HUD_BLOCK_HEIGHT + LEFT_DRAFT_EXTRA,
+    )
+    pygame.draw.rect(surface, panel_color, draft_rect, border_radius=10)
+    pygame.draw.rect(surface, border_color, draft_rect, 2, border_radius=10)
+    meter = pygame.Rect(
+        draft_rect.left + 10,
+        draft_rect.top + 10,
+        draft_rect.width - 20,
+        draft_rect.height - 22,
+    )
+    fill_ratio = clamp(data.get("draft", 0.0), 0.0, 1.0)
+    fill_height = meter.height * fill_ratio
+    fill_points = [
+        (meter.left, meter.bottom),
+        (meter.right, meter.bottom),
+        (meter.centerx, meter.bottom - fill_height),
+    ]
+    pygame.draw.polygon(surface, (39, 216, 90), fill_points)
+    draft_label = font_small.render("Draft", True, (54, 255, 107))
+    label_rot = pygame.transform.rotate(draft_label, 90)
+    surface.blit(
+        label_rot,
+        (draft_rect.right + 4, draft_rect.centery - label_rot.get_height() // 2),
+    )
+
+    # Bottom HUD
+    hud_width = min(720, SCREEN_WIDTH - 260)
+    hud_rect = pygame.Rect(
+        (SCREEN_WIDTH - hud_width) // 2,
+        SCREEN_HEIGHT - HUD_BLOCK_HEIGHT - HUD_BOTTOM_MARGIN,
+        hud_width,
+        HUD_BLOCK_HEIGHT,
+    )
+    pygame.draw.rect(surface, hud_color, hud_rect, border_radius=12)
+    pygame.draw.rect(surface, hud_border, hud_rect, 2, border_radius=12)
+
+    spd_value = data.get("player_speed", 0.0)
+    rpm_value = int(spd_value * 73)
+    gear_value = min(6, max(1, int(spd_value / 45) + 1))
+    temp_value = int(210 + max(0, spd_value - 160) * 1.1)
+    speed_text = font.render(f"SPD {spd_value:06.2f}", True, track_text_color)
+    temp_text = font_small.render(f"TEMP {temp_value}", True, (255, 255, 255))
+    rpm_text = font.render(f"{rpm_value:05d} RPM", True, track_text_color)
+    gear_text = font_small.render(f"GEAR {gear_value}", True, (255, 255, 255))
+
+    left_x = hud_rect.left + 20
+    surface.blit(speed_text, (left_x, hud_rect.top + 18))
+    surface.blit(temp_text, (left_x, hud_rect.top + 54))
+    right_x = hud_rect.right - rpm_text.get_width() - 20
+    surface.blit(rpm_text, (right_x, hud_rect.top + 18))
+    surface.blit(gear_text, (right_x, hud_rect.top + 54))
+
+    diamond_size = 18
+    diamond_surface = pygame.Surface((diamond_size, diamond_size), pygame.SRCALPHA)
+    pygame.draw.rect(diamond_surface, (207, 42, 42), diamond_surface.get_rect(), border_radius=2)
+    pygame.draw.rect(diamond_surface, (139, 28, 28), diamond_surface.get_rect(), 2, border_radius=2)
+    rotated = pygame.transform.rotate(diamond_surface, 45)
+    surface.blit(
+        rotated,
+        rotated.get_rect(center=(hud_rect.centerx, hud_rect.centery)).topleft,
+    )
+
+    # Lift button
+    lift_width = 120
+    lift_height = 52
+    lift_rect = pygame.Rect(
+        min(hud_rect.right + 16, SCREEN_WIDTH - lift_width - 12),
+        hud_rect.bottom - lift_height - 12,
+        lift_width,
+        lift_height,
+    )
+    lift_color = (54, 234, 104) if not data.get("lift_active") else (104, 255, 145)
+    pygame.draw.rect(surface, lift_color, lift_rect, border_radius=10)
+    pygame.draw.rect(surface, (30, 164, 74), lift_rect, 3, border_radius=10)
+    lift_text = font.render("Lift", True, (6, 43, 18))
+    surface.blit(
+        lift_text,
+        (lift_rect.centerx - lift_text.get_width() // 2, lift_rect.centery - lift_text.get_height() // 2),
+    )
 
 
 def compute_turn_penalty(lap_progress):
@@ -933,6 +1256,9 @@ def main():
     current_lap = 1
     main_hover = None
     green_flash_timer = 0.0
+    leaders_collapsed = False
+    pause_active = False
+    lift_active = False
 
     def start_quick_race(selected_track_index: int | None = None, selected_driver_index_local: int | None = None):
         nonlocal active_preset, lane_positions, track_bounds, ribbons, ai_cars
@@ -940,6 +1266,7 @@ def main():
         nonlocal lane_cooldown, player_speed_mph, draft_bonus, lap_distance, total_distance, current_lap
         nonlocal rolling_timer, state, selected_track, selected_driver_index, contact_boost_cache
         nonlocal main_hover, green_flash_timer
+        nonlocal leaders_collapsed, pause_active, lift_active
 
         if selected_track_index is None:
             selected_track_index = 0
@@ -1002,6 +1329,9 @@ def main():
         rolling_timer = ROLLING_DURATION
         main_hover = None
         green_flash_timer = 0.0
+        leaders_collapsed = False
+        pause_active = False
+        lift_active = False
         state = "RACE"
 
     running = True
@@ -1010,7 +1340,12 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif state == "TITLE":
+                continue
+            if event.type == pygame.KEYUP:
+                if event.key == pygame.K_SPACE:
+                    lift_active = False
+                continue
+            if state == "TITLE":
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         start_quick_race()
@@ -1037,6 +1372,13 @@ def main():
             elif state == "RACE" and event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     state = "MENU"
+                    lift_active = False
+                elif event.key == pygame.K_TAB:
+                    leaders_collapsed = not leaders_collapsed
+                elif event.key == pygame.K_p:
+                    pause_active = not pause_active
+                elif event.key == pygame.K_SPACE:
+                    lift_active = True
 
         if state == "TITLE":
             rects = draw_title_menu(screen, (font, font_large, font_small), main_hover)
@@ -1138,11 +1480,6 @@ def main():
             scroll,
             ribbons,
         )
-        if control_locked and track_rect.height:
-            rolling_label = font_small.render("Rolling start — controls locked", True, (255, 230, 200))
-            countdown_label = font_small.render(f"{rolling_timer:.1f}s", True, (255, 140, 60))
-            screen.blit(rolling_label, (SCREEN_WIDTH / 2 - rolling_label.get_width() / 2, track_rect.top - 44))
-            screen.blit(countdown_label, (SCREEN_WIDTH / 2 - countdown_label.get_width() / 2, track_rect.top - 18))
         for car in ai_cars:
             car.draw(screen, total_distance)
         player_rect = player_sprite.get_rect(center=(SCREEN_WIDTH // 2, int(player_center_y)))
@@ -1155,8 +1492,8 @@ def main():
         ahead, behind = build_pack_view(ai_cars)
         draft_intensity, draft_gap = compute_draft_intensity(ai_cars, player_lane_index)
         draft_bonus = draft_intensity
+        leader_entries = build_leader_entries(ai_cars, sim_speed, limit=6)
 
-        draw_track_banner(screen, active_preset, current_lap, active_preset.laps, font_large, font_small, lap_progress)
         draw_pack_sidebar(screen, font_small, font_large, ahead, behind)
         draw_driver_card(
             screen,
@@ -1172,6 +1509,21 @@ def main():
             player_lane_index,
         )
 
+        ui_payload = {
+            "track_name": active_preset.name,
+            "lap": current_lap,
+            "laps_total": active_preset.laps,
+            "leaders": leader_entries,
+            "control_locked": control_locked,
+            "draft": draft_intensity,
+            "lift_active": lift_active,
+            "pause_active": pause_active,
+            "leaders_collapsed": leaders_collapsed,
+            "brake": brake,
+            "player_speed": player_speed_mph,
+        }
+        draw_dm2_ui(screen, (font, font_large, font_small), ui_payload)
+
         if current_lap >= active_preset.laps and lap_progress >= 0.95:
             finish = font_large.render("Race Complete", True, (255, 220, 120))
             screen.blit(
@@ -1181,7 +1533,13 @@ def main():
 
         if green_flash_timer > 0.0:
             banner = font_large.render("GREEN!", True, (120, 255, 140))
-            screen.blit(banner, (SCREEN_WIDTH / 2 - banner.get_width() / 2, 100))
+            screen.blit(
+                banner,
+                (
+                    SCREEN_WIDTH / 2 - banner.get_width() / 2,
+                    TOP_BAR_HEIGHT + 6,
+                ),
+            )
 
         pygame.display.flip()
 
