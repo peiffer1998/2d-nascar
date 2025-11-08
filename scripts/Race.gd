@@ -14,6 +14,7 @@ var lane_timer: float = 0.0
 @onready var position_label = $HUD/TopPanel/PositionLabel
 @onready var race_controller = $RaceController
 @onready var audio_manager = $AudioManager
+var units_to_mph := 0.35
 
 func _ready() -> void:
 	lane_timer = 0.0
@@ -27,6 +28,8 @@ func _ready() -> void:
 		restart_button.connect("pressed", Callable(self, "_on_restart_pressed"))
 	if menu_button:
 		menu_button.connect("pressed", Callable(self, "_on_menu_pressed"))
+	if car_manager and car_manager.has_variable("units_to_mph"):
+		units_to_mph = car_manager.units_to_mph
 
 func _process(delta: float) -> void:
 	track.advance(player.speed, delta)
@@ -38,15 +41,23 @@ func _handle_lane_input(delta: float) -> void:
 	if lane_timer > 0:
 		return
 	if Input.is_action_just_pressed("ui_left"):
-		player.shift_lane(-1)
+		_request_player_lane(-1)
 		lane_timer = lane_switch_cooldown
 	elif Input.is_action_just_pressed("ui_right"):
-		player.shift_lane(1)
+		_request_player_lane(1)
 		lane_timer = lane_switch_cooldown
 
+func _request_player_lane(offset: int) -> void:
+	var next = clamp(player.lane_index + offset, 0, player.lane_positions.size() - 1)
+	if car_manager and car_manager.is_lane_clear_for_player(next, 120.0):
+		player.shift_lane(offset)
+	else:
+		# blocked; tiny feedback hook (optional sfx in AudioManager)
+		pass
+
 func _update_hud() -> void:
-	var speed_value = int(clamp(player.speed, 0, player.max_speed))
-	speed_label.text = "SPEED: %03d" % speed_value
+	var mph = int(round(player.speed * units_to_mph))
+	speed_label.text = "SPEED: %03d MPH" % mph
 	var stats = car_manager.get_pack_snapshot()
 	var draft_percent = int(clamp(stats["draft_avg"] * 100.0, 0, 999))
 	var gap = stats["closest_gap"]

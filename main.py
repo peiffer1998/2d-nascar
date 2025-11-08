@@ -4,7 +4,7 @@ import os
 import random
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pygame
 
@@ -25,6 +25,29 @@ ROLLING_START_MAX_MPH = 200
 CONTROLLED_BASE_MPH = 200
 BRAKE_MPH = 120
 TURN_PENALTY_MAX = 34
+# --- UI (TITLE) ---
+TITLE_BUTTONS = ("Quick Race", "Settings", "Exit")
+BUTTON_W, BUTTON_H = 320, 68
+BUTTON_GAP = 18
+
+# --- Quick Race defaults ---
+DEFAULT_QUICK_RACE_PRESET = "Cup21 Draft Oval"
+DEFAULT_FIELD_SIZE = 43  # keep 43-car feel by default
+GREEN_FLASH_TIME = 1.25  # seconds "GREEN!" banner after control unlock
+QUICK_RACE_LANE_WIDTH = 96.0
+QUICK_RACE_LANE_SPACING = 12.0
+QUICK_RACE_ROW_GAP = 16.0
+QUICK_RACE_PACK_ROWS = 22
+QUICK_RACE_PLAYER_ROW = 18
+QUICK_RACE_PLAYER_LANE = 0
+QUICK_RACE_ROW_JITTER = 0.45
+
+# --- Collisions & lane safety ---
+COLLISION_GAP = 14  # min spacing between cars in same lane (~half the contact threshold)
+CRASH_REL_MPH = 24  # closing rate above this => crash
+LANE_SAFETY_DISTANCE = 120.0  # block lane change if a car is within ± this
+# Derived: units/sec to compare with speeds
+CRASH_REL_UNITS = CRASH_REL_MPH * SPEED_SCALE
 
 MANUFACTURER_COLORS = {
     "CHV": (222, 60, 54),
@@ -386,9 +409,28 @@ class Car:
         self.aggression = random.uniform(0.85, 1.2)
         self.size = pygame.Vector2(self.sprite.get_size())
         self.lane_change_timer = 0.0
+        self.state = "RUNNING"      # RUNNING | CRASHING | DISABLED
+        self.crash_timer = 0.0
+        self.spin_angle = 0.0
+        self.spin_speed = 0.0
 
     def update(self, delta, sim_player_speed, control_locked):
         self.lane_change_timer = max(0.0, self.lane_change_timer - delta)
+        # Crash/disabled kinetics
+        if self.state == "CRASHING":
+            self.crash_timer -= delta
+            self.spin_angle += self.spin_speed * delta
+            target = sim_player_speed - 140.0
+            accel = 420.0
+            self.speed = move_toward(self.speed, target, accel * delta)
+            self.distance -= (self.speed - sim_player_speed) * delta
+            if self.crash_timer <= 0:
+                self.state = "DISABLED"
+            return self.distance < -400
+        elif self.state == "DISABLED":
+            self.speed = move_toward(self.speed, sim_player_speed - 220.0, 560.0 * delta)
+            self.distance -= (self.speed - sim_player_speed) * delta
+            return self.distance < -400
         if control_locked:
             target = sim_player_speed + (self.aggression - 1.0) * 12.0
             accel = 280.0
@@ -404,7 +446,12 @@ class Car:
     def draw(self, surface, offset):
         center_y = self.lane_positions[self.lane_index]
         x = SCREEN_WIDTH / 2 - (self.distance - offset)
-        rect = self.sprite.get_rect(center=(x, center_y))
+        base_rect = self.sprite.get_rect(center=(x, center_y))
+        sprite_to_draw = self.sprite
+        rect = base_rect
+        if self.state in ("CRASHING", "DISABLED"):
+            sprite_to_draw = pygame.transform.rotate(self.sprite, self.spin_angle)
+            rect = sprite_to_draw.get_rect(center=base_rect.center)
         glow_rect = rect.inflate(28, 18)
         glow_surface = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
         pygame.draw.ellipse(
@@ -413,14 +460,14 @@ class Car:
             glow_surface.get_rect(),
         )
         surface.blit(glow_surface, glow_rect.topleft)
-        surface.blit(self.sprite, rect)
+        surface.blit(sprite_to_draw, rect)
 
 
 def spawn_pack(lane_positions, preset, drivers):
     ai = []
     lane_count = max(1, preset.lane_count)
     base_distance = 120
-    row_spacing = max(36, preset.row_gap * 0.85)
+    row_spacing = max(18.0, preset.row_gap * 0.5)
     field_target = preset.field_size if preset.field_size and preset.field_size > 1 else preset.pack_rows * lane_count
     ai_limit = max(3, field_target - 1 if preset.field_size else field_target)
     formation_lanes = [
@@ -443,8 +490,59 @@ def spawn_pack(lane_positions, preset, drivers):
             break
         lane_index = formation_lanes[idx % columns]
         distance = base_distance + row * row_spacing
-        jitter = random.uniform(-6, 6 * (row / max(1, preset.pack_rows)))
+        jitter = random.uniform(-3, 3 * (row / max(1, preset.pack_rows)))
         ai.append(Car(lane_index, distance + jitter, lane_positions, driver))
+    return ai
+
+
+def build_two_wide_pack(
+    lane_positions,
+    preset,
+    drivers,
+    player_lane_index: int,
+    player_row_index: int,
+    row_spacing_override: float | None = None,
+):
+    """Create an ultra-tight two-wide grid and reserve the player's slot."""
+    if preset.lane_count < 2 or not lane_positions:
+        return []
+    formation_lanes = [
+        lane for lane in (preset.formation_lanes or list(range(preset.lane_count))) if 0 <= lane < preset.lane_count
+    ]
+    if len(formation_lanes) < 2:
+        formation_lanes = list(range(min(2, preset.lane_count)))
+    base_spacing = row_spacing_override if row_spacing_override is not None else preset.row_gap
+    row_spacing = max(COLLISION_GAP + 1.0, 6.0, base_spacing)
+    target_ai = (preset.field_size or (preset.pack_rows * len(formation_lanes))) - 1
+    if target_ai <= 0:
+        return []
+    driver_pool = drivers[:] or [create_default_driver()]
+    random.shuffle(driver_pool)
+    driver_index = 0
+
+    def take_driver():
+        nonlocal driver_index
+        driver = driver_pool[driver_index]
+        driver_index = (driver_index + 1) % len(driver_pool)
+        return driver
+
+    base_distance = -player_row_index * row_spacing
+    jitter_scale = row_spacing * QUICK_RACE_ROW_JITTER
+    ai: list[Car] = []
+    for row in range(preset.pack_rows):
+        row_distance = base_distance + row * row_spacing
+        for lane in formation_lanes[:2]:
+            if row == player_row_index and lane == player_lane_index:
+                continue
+            car = Car(
+                lane,
+                row_distance + random.uniform(-jitter_scale, jitter_scale),
+                lane_positions,
+                take_driver(),
+            )
+            ai.append(car)
+            if len(ai) >= target_ai:
+                return ai
     return ai
 
 
@@ -543,6 +641,60 @@ def apply_drafting(ai_cars, player_lane):
             player_contact += contact * 30.0
             car.speed += contact * 28.0
     return min(player_contact, 50.0)
+
+
+def is_lane_clear_for_player(target_lane: int, ai_cars, safety_distance: float = LANE_SAFETY_DISTANCE) -> bool:
+    for car in ai_cars:
+        if car.lane_index == target_lane and abs(car.distance) < safety_distance:
+            return False
+    return True
+
+
+def resolve_collisions(ai_cars, player_lane_index: int, player_sim_speed: float) -> float:
+    lanes = defaultdict(list)
+    for c in ai_cars:
+        lanes[c.lane_index].append(c)
+
+    player_mph_delta = 0.0
+
+    for lane, cars in lanes.items():
+        cars.sort(key=lambda c: c.distance, reverse=True)
+        for i in range(len(cars) - 1):
+            ahead = cars[i]
+            behind = cars[i + 1]
+            if ahead.state != "RUNNING" or behind.state != "RUNNING":
+                continue
+            gap = ahead.distance - behind.distance
+            if gap <= COLLISION_GAP:
+                rel = behind.speed - ahead.speed
+                if rel > CRASH_REL_UNITS:
+                    for t in (ahead, behind):
+                        t.state = "CRASHING"
+                        t.crash_timer = 1.2
+                        t.spin_speed = random.uniform(-220, 220)
+                else:
+                    transfer = max(0.0, rel * 0.45)
+                    ahead.speed += transfer * 0.65
+                    behind.speed = max(0.0, behind.speed - transfer * 0.35)
+                behind.distance = min(behind.distance, ahead.distance - COLLISION_GAP)
+
+    for car in lanes.get(player_lane_index, []):
+        if car.state != "RUNNING":
+            continue
+        gap = car.distance
+        if 0 < gap <= COLLISION_GAP:
+            rel = player_sim_speed - car.speed
+            if rel > CRASH_REL_UNITS:
+                car.state = "CRASHING"
+                car.crash_timer = 1.2
+                car.spin_speed = random.uniform(-220, 220)
+                player_mph_delta -= 8.0
+            else:
+                transfer = max(0.0, rel * 0.45)
+                car.speed += transfer * 0.70
+                player_mph_delta -= min(3.0, (transfer / SPEED_SCALE) * 0.35)
+            car.distance = max(car.distance, COLLISION_GAP)
+    return player_mph_delta
 
 
 def build_pack_view(ai_cars, limit=4):
@@ -706,6 +858,31 @@ def draw_menu(screen, fonts, presets, selected_track, drivers, driver_index):
     screen.blit(rarity, (right_rect.x + 24, right_rect.bottom - 60))
 
 
+def draw_title_menu(screen, fonts, hover_index: int | None):
+    font, font_large, font_small = fonts
+    screen.fill((6, 10, 18))
+    title = font_large.render("Drafting Pack Racer", True, (235, 240, 255))
+    subtitle = font_small.render("DM2-inspired quick race", True, (180, 195, 220))
+    screen.blit(title, (SCREEN_WIDTH / 2 - title.get_width() / 2, 80))
+    screen.blit(subtitle, (SCREEN_WIDTH / 2 - subtitle.get_width() / 2, 120))
+
+    cx = SCREEN_WIDTH // 2
+    start_y = 220
+    rects = []
+    for i, label in enumerate(TITLE_BUTTONS):
+        r = pygame.Rect(0, 0, BUTTON_W, BUTTON_H)
+        r.center = (cx, start_y + i * (BUTTON_H + BUTTON_GAP))
+        rects.append(r)
+        color = (18, 22, 32)
+        border = (120, 180, 255) if hover_index == i else (70, 90, 130)
+        pygame.draw.rect(screen, color, r, border_radius=12)
+        pygame.draw.rect(screen, border, r, width=2, border_radius=12)
+        txt = font.render(label, True, (230, 240, 255))
+        screen.blit(txt, (r.centerx - txt.get_width() // 2, r.centery - txt.get_height() // 2))
+
+    return rects
+
+
 def pick_default_driver_index(drivers):
     if not drivers:
         return 0
@@ -733,7 +910,7 @@ def main():
         driver_library = [create_default_driver()]
     selected_driver_index = pick_default_driver_index(driver_library)
 
-    state = "MENU"
+    state = "TITLE"
     selected_track = 0
     active_preset = TRACK_PRESETS[selected_track]
     lane_positions = build_lane_positions(active_preset.lane_count, active_preset.lane_width, active_preset.lane_spacing)
@@ -754,6 +931,78 @@ def main():
     lap_distance = 4200.0
     total_distance = 0.0
     current_lap = 1
+    main_hover = None
+    green_flash_timer = 0.0
+
+    def start_quick_race(selected_track_index: int | None = None, selected_driver_index_local: int | None = None):
+        nonlocal active_preset, lane_positions, track_bounds, ribbons, ai_cars
+        nonlocal player_driver, player_sprite, player_lane_target, player_lane_value
+        nonlocal lane_cooldown, player_speed_mph, draft_bonus, lap_distance, total_distance, current_lap
+        nonlocal rolling_timer, state, selected_track, selected_driver_index, contact_boost_cache
+        nonlocal main_hover, green_flash_timer
+
+        if selected_track_index is None:
+            selected_track_index = 0
+            for idx, preset in enumerate(TRACK_PRESETS):
+                if preset.name == DEFAULT_QUICK_RACE_PRESET:
+                    selected_track_index = idx
+                    break
+
+        selected_track = selected_track_index
+        preset_base = TRACK_PRESETS[selected_track]
+        quick_race_layout = preset_base.name == DEFAULT_QUICK_RACE_PRESET
+        if quick_race_layout:
+            active_preset = replace(
+                preset_base,
+                lane_count=2,
+                lane_spacing=QUICK_RACE_LANE_SPACING,
+                lane_width=QUICK_RACE_LANE_WIDTH,
+                pack_rows=QUICK_RACE_PACK_ROWS,
+                row_gap=QUICK_RACE_ROW_GAP,
+                tagline="Two-wide 43-car pace pack, bumpers touching.",
+                formation_lanes=[0, 1],
+                field_size=DEFAULT_FIELD_SIZE,
+            )
+        else:
+            active_preset = preset_base
+
+        lane_positions = build_lane_positions(active_preset.lane_count, active_preset.lane_width, active_preset.lane_spacing)
+        track_bounds = compute_track_bounds(lane_positions, active_preset.lane_width, active_preset.lane_spacing)
+        ribbons = build_speed_ribbons(track_bounds)
+        player_lane_target = active_preset.lane_count // 2
+        player_row_index = active_preset.pack_rows - 1
+        if quick_race_layout:
+            player_lane_target = clamp(QUICK_RACE_PLAYER_LANE, 0, active_preset.lane_count - 1)
+            player_row_index = clamp(QUICK_RACE_PLAYER_ROW, 0, active_preset.pack_rows - 1)
+            ai_cars = build_two_wide_pack(
+                lane_positions,
+                active_preset,
+                driver_library,
+                player_lane_target,
+                player_row_index,
+                row_spacing_override=active_preset.row_gap,
+            )
+            if not ai_cars:
+                ai_cars = spawn_pack(lane_positions, active_preset, driver_library)
+        else:
+            ai_cars = spawn_pack(lane_positions, active_preset, driver_library)
+        driver_index_to_use = selected_driver_index_local if selected_driver_index_local is not None else selected_driver_index
+        driver_index_to_use = max(0, min(driver_index_to_use, len(driver_library) - 1))
+        selected_driver_index = driver_index_to_use
+        player_driver = driver_library[driver_index_to_use]
+        player_sprite = random.choice(player_driver.sprites)
+        player_lane_value = float(player_lane_target)
+        lane_cooldown = 0.0
+        player_speed_mph = 0.0
+        draft_bonus = 0.0
+        contact_boost_cache = 0.0
+        lap_distance = 4200.0
+        total_distance = 0.0
+        current_lap = 1
+        rolling_timer = ROLLING_DURATION
+        main_hover = None
+        green_flash_timer = 0.0
+        state = "RACE"
 
     running = True
     while running:
@@ -761,6 +1010,17 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif state == "TITLE":
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        start_quick_race()
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+                elif event.type == pygame.MOUSEMOTION:
+                    main_hover = None
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    pass
+                continue
             elif state == "MENU" and event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_DOWN:
                     selected_track = (selected_track + 1) % len(TRACK_PRESETS)
@@ -771,32 +1031,31 @@ def main():
                 elif event.key == pygame.K_LEFT:
                     selected_driver_index = (selected_driver_index - 1) % len(driver_library)
                 elif event.key == pygame.K_RETURN:
-                    active_preset = TRACK_PRESETS[selected_track]
-                    lane_positions = build_lane_positions(
-                        active_preset.lane_count, active_preset.lane_width, active_preset.lane_spacing
-                    )
-                    track_bounds = compute_track_bounds(
-                        lane_positions, active_preset.lane_width, active_preset.lane_spacing
-                    )
-                    ribbons = build_speed_ribbons(track_bounds)
-                    ai_cars = spawn_pack(lane_positions, active_preset, driver_library)
-                    player_driver = driver_library[selected_driver_index]
-                    player_sprite = random.choice(player_driver.sprites)
-                    player_lane_target = active_preset.lane_count // 2
-                    player_lane_value = float(player_lane_target)
-                    lane_cooldown = 0.0
-                    player_speed_mph = 0.0
-                    draft_bonus = 0.0
-                    lap_distance = 4200.0
-                    total_distance = 0.0
-                    current_lap = 1
-                    rolling_timer = ROLLING_DURATION
-                    state = "RACE"
+                    start_quick_race(selected_track, selected_driver_index)
                 elif event.key == pygame.K_ESCAPE:
                     running = False
             elif state == "RACE" and event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     state = "MENU"
+
+        if state == "TITLE":
+            rects = draw_title_menu(screen, (font, font_large, font_small), main_hover)
+            mx, my = pygame.mouse.get_pos()
+            main_hover = None
+            for i, rect in enumerate(rects):
+                if rect.collidepoint(mx, my):
+                    main_hover = i
+                    break
+            if pygame.mouse.get_pressed(num_buttons=3)[0]:
+                if main_hover == 0:
+                    start_quick_race()
+                elif main_hover == 1:
+                    main_hover = None
+                    state = "MENU"
+                elif main_hover == 2:
+                    running = False
+            pygame.display.flip()
+            continue
 
         if state == "MENU":
             draw_menu(screen, (font, font_large, font_small), TRACK_PRESETS, selected_track, driver_library, selected_driver_index)
@@ -805,6 +1064,12 @@ def main():
 
         rolling_timer = max(0.0, rolling_timer - delta)
         control_locked = rolling_timer > 0.0
+        just_unlocked = False
+        if not control_locked and green_flash_timer <= 0.0:
+            if rolling_timer == 0.0:
+                green_flash_timer = GREEN_FLASH_TIME
+                just_unlocked = True
+        green_flash_timer = max(0.0, green_flash_timer - delta)
 
         keys = pygame.key.get_pressed()
         lane_cooldown = max(0.0, lane_cooldown - delta)
@@ -812,12 +1077,16 @@ def main():
             player_lane_target = active_preset.lane_count // 2
         else:
             if lane_cooldown <= 0.0:
-                if keys[pygame.K_LEFT] and player_lane_target > 0:
-                    player_lane_target -= 1
-                    lane_cooldown = LANE_CHANGE_COOLDOWN
-                elif keys[pygame.K_RIGHT] and player_lane_target < active_preset.lane_count - 1:
-                    player_lane_target += 1
-                    lane_cooldown = LANE_CHANGE_COOLDOWN
+                if keys[pygame.K_LEFT]:
+                    desired = max(0, player_lane_target - 1)
+                    if desired != player_lane_target and is_lane_clear_for_player(desired, ai_cars, LANE_SAFETY_DISTANCE):
+                        player_lane_target = desired
+                        lane_cooldown = LANE_CHANGE_COOLDOWN
+                elif keys[pygame.K_RIGHT]:
+                    desired = min(active_preset.lane_count - 1, player_lane_target + 1)
+                    if desired != player_lane_target and is_lane_clear_for_player(desired, ai_cars, LANE_SAFETY_DISTANCE):
+                        player_lane_target = desired
+                        lane_cooldown = LANE_CHANGE_COOLDOWN
         player_lane_value = move_toward(player_lane_value, player_lane_target, delta * 6.5)
         player_lane_index = int(round(clamp(player_lane_value, 0, active_preset.lane_count - 1)))
         player_center_y = lane_center_at(lane_positions, player_lane_value)
@@ -850,6 +1119,11 @@ def main():
             attempt_lane_changes(ai_cars, active_preset)
         contact_boost = apply_drafting(ai_cars, player_lane_index)
         contact_boost_cache = contact_boost
+        mph_delta = 0.0
+        if not control_locked:
+            mph_delta = resolve_collisions(ai_cars, player_lane_index, sim_speed)
+        if mph_delta != 0.0:
+            player_speed_mph = max(0.0, player_speed_mph + mph_delta)
 
         for ribbon in ribbons:
             ribbon.update(delta, sim_speed)
@@ -904,6 +1178,10 @@ def main():
                 finish,
                 (SCREEN_WIDTH / 2 - finish.get_width() / 2, SCREEN_HEIGHT / 2 - finish.get_height() / 2),
             )
+
+        if green_flash_timer > 0.0:
+            banner = font_large.render("GREEN!", True, (120, 255, 140))
+            screen.blit(banner, (SCREEN_WIDTH / 2 - banner.get_width() / 2, 100))
 
         pygame.display.flip()
 

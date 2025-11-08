@@ -17,11 +17,17 @@ const AI_SPRITE_SCALE := Vector2(0.78, 0.78)
 @export var pack_rows: int = 6
 @export var row_gap: float = 70.0
 @export var ai_depth_range: Vector2 = Vector2(500, 1400)
-@export var draft_distance: float = 110.0
+@export var draft_distance: float = 170.0
 @export var pack_snapshot_range: float = 480.0
 @export var race_controller_path: NodePath
 @export var lane_change_interval: float = 1.5
 @export var lane_change_threshold: float = 58.0
+@export var car_length: float = 90.0
+@export var collision_gap: float = 72.0
+@export var crash_rel_speed_threshold: float = 90.0   # units/s closing rate to trigger crash
+@export var side_draft_range: float = 95.0
+@export var side_draft_strength: float = 0.08
+@export var units_to_mph: float = 0.35                # used by HUD via Race.gd
 
 var player_car: Car
 var lane_positions: Array = []
@@ -65,6 +71,8 @@ func _process(delta: float) -> void:
 
 	_update_ai_lane_changes(delta)
 	_apply_pack_drafting(delta)
+	_apply_side_drafting(delta)
+	_detect_and_resolve_collisions(delta)
 	_update_player_draft()
 
 func get_lane_load() -> Array:
@@ -197,9 +205,113 @@ func _apply_pack_drafting(delta: float) -> void:
 				closest_gap = gap
 		if closest_gap < draft_distance:
 			intensity = 1.0 - (closest_gap / draft_distance)
-			var ai = current["car"] as Car
-			ai.apply_draft_bonus(delta, intensity)
+		var ai = current["car"] as Car
+		ai.apply_draft_bonus(delta, intensity)
 		current["draft_intensity"] = intensity
+
+func is_lane_clear(car: Car, target_lane: int, safety_distance: float = 120.0) -> bool:
+	var my_dist := car.is_player ? 0.0 : car.distance_ahead
+	for entry in ai_cars:
+		if entry["lane"] != target_lane:
+			continue
+		var gap = abs(entry["distance"] - my_dist)
+		if gap < safety_distance:
+			return false
+	return true
+
+func is_lane_clear_for_player(target_lane: int, safety_distance: float = 120.0) -> bool:
+	return is_lane_clear(player_car, target_lane, safety_distance)
+
+func _apply_side_drafting(delta: float) -> void:
+	for a_i in range(ai_cars.size()):
+		var A = ai_cars[a_i]
+		for b_i in range(a_i + 1, ai_cars.size()):
+			var B = ai_cars[b_i]
+			if abs(A["lane"] - B["lane"]) != 1:
+				continue
+			var dz = A["distance"] - B["distance"]
+			if abs(dz) > side_draft_range:
+				continue
+			var t = 1.0 - abs(dz) / side_draft_range
+			var tracer: Car
+			var victim: Car
+			if dz < 0:
+				tracer = A["car"]
+				victim = B["car"]
+			else:
+				tracer = B["car"]
+				victim = A["car"]
+			tracer.side_draft_penalty = max(0.0, tracer.side_draft_penalty - side_draft_strength * t * delta)
+			victim.side_draft_penalty = min(victim.side_draft_penalty + side_draft_strength * t * delta, 0.25)
+
+	if player_car:
+		for entry in ai_cars:
+			if abs(entry["lane"] - player_car.lane_index) != 1:
+				continue
+			var dzp = entry["distance"] - 0.0
+			if abs(dzp) > side_draft_range:
+				continue
+			var t = 1.0 - abs(dzp) / side_draft_range
+			var attacker: Car
+			var victim: Car
+			if dzp > 0:
+				attacker = player_car
+				victim = entry["car"]
+			else:
+				attacker = entry["car"]
+				victim = player_car
+			attacker.side_draft_penalty = max(0.0, attacker.side_draft_penalty - side_draft_strength * t * delta)
+			victim.side_draft_penalty = min(victim.side_draft_penalty + side_draft_strength * t * delta, 0.25)
+
+func _detect_and_resolve_collisions(delta: float) -> void:
+	for lane in range(lane_count):
+		var lane_entries: Array = []
+		for e in ai_cars:
+			if e["lane"] == lane:
+				lane_entries.append(e)
+		if player_car and player_car.lane_index == lane:
+			lane_entries.append({
+				"car": player_car,
+				"lane": lane,
+				"distance": 0.0,
+				"is_player": true
+			})
+		lane_entries.sort_custom(Callable(self, "_compare_lane_distance"))
+
+		for i in range(lane_entries.size() - 1):
+			var behind = lane_entries[i]
+			var ahead = lane_entries[i + 1]
+			var car_b: Car = behind["car"]
+			var car_a: Car = ahead["car"]
+			var gap = ahead["distance"] - behind["distance"]
+			if gap > collision_gap:
+				continue
+			var rel = car_b.speed - car_a.speed
+			if rel >= crash_rel_speed_threshold:
+				car_a.crash(rel)
+				car_b.crash(rel)
+			else:
+				var transfer = rel * 0.45
+				if transfer > 0.0:
+					car_a.impact_bump(transfer * 0.65)
+					car_b.impact_slow(transfer * 0.35)
+			var new_behind_dist = max(ahead["distance"] - collision_gap, behind["distance"] - 2.0)
+			behind["distance"] = new_behind_dist
+			if not behind.has("is_player"):
+				(behind["car"] as Car).set_distance(new_behind_dist)
+
+	if player_car:
+		player_car.side_draft_penalty = max(0.0, player_car.side_draft_penalty - 0.5 * delta)
+	for e in ai_cars:
+		var c: Car = e["car"]
+		c.side_draft_penalty = max(0.0, c.side_draft_penalty - 0.5 * delta)
+
+func _compare_lane_distance(a, b) -> int:
+	if a["distance"] < b["distance"]:
+		return -1
+	elif a["distance"] > b["distance"]:
+		return 1
+	return 0
 
 func _update_ai_lane_changes(delta: float) -> void:
 	for car_data in ai_cars:
