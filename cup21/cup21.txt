@@ -1,0 +1,352 @@
+{
+  "modName": "Cup '21",
+  "modFolder": "cup21",
+  "modAuthor": "ElMau71h",
+  "modPhysics": "Default",
+  "drivers": [
+    {
+      "carNum": "0",
+	  "carDriver": "Houff",
+	  "carTeam": "SCR",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "1",
+	  "carDriver": "Ku.Busch",
+	  "carTeam": "CGR",
+	  "carManufacturer": "CHV",
+      "carRarity": "3",
+      "carType": "Intimidator"
+    },
+	{
+      "carNum": "2",
+	  "carDriver": "Keselowski",
+	  "carTeam": "PEN",
+	  "carManufacturer": "FRD",
+      "carRarity": "3",
+      "carType": "Closer"
+    },
+    	{
+      "carNum": "3",
+	  "carDriver": "Dillon",
+	  "carTeam": "RCR",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Intimidator"
+    },
+	{
+      "carNum": "4",
+	  "carDriver": "Harvick",
+	  "carTeam": "SHR",
+	  "carManufacturer": "FRD",
+      "carRarity": "3",
+      "carType": "Closer"
+    },
+    	{
+      "carNum": "5",
+	  "carDriver": "Larson",
+	  "carTeam": "HEN",
+	  "carManufacturer": "CHV",
+      "carRarity": "4",
+      "carType": "Dominator"
+    },
+	{
+      "carNum": "6",
+	  "carDriver": "Newman",
+	  "carTeam": "RFR",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "7",
+	  "carDriver": "LaJoie",
+	  "carTeam": "SPI",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "8",
+	  "carDriver": "Reddick",
+	  "carTeam": "RCR",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "9",
+	  "carDriver": "Elliott",
+	  "carTeam": "HEN",
+	  "carManufacturer": "CHV",
+      "carRarity": "4",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "10",
+	  "carDriver": "Almirola",
+	  "carTeam": "SHR",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Blocker"
+    },
+	{
+      "carNum": "11",
+	  "carDriver": "Hamlin",
+	  "carTeam": "JGR",
+	  "carManufacturer": "TYT",
+      "carRarity": "4",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "12",
+	  "carDriver": "Blaney",
+	  "carTeam": "PEN",
+	  "carManufacturer": "FRD",
+      "carRarity": "3",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "14",
+	  "carDriver": "Briscoe",
+	  "carTeam": "SHR",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Rookie"
+    },
+	{
+      "carNum": "15",
+	  "carDriver": "Davison",
+	  "carTeam": "RWR",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Blocker"
+    },
+    	{
+      "carNum": "16",
+	  "carDriver": "Allmendinger",
+	  "carTeam": "KAU",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "17",
+	  "carDriver": "Buescher",
+	  "carTeam": "RFR",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "18",
+	  "carDriver": "Ky.Busch",
+	  "carTeam": "JGR",
+	  "carManufacturer": "TYT",
+      "carRarity": "3",
+      "carType": "Intimidator"
+    },
+	{
+      "carNum": "19",
+	  "carDriver": "Truex Jr",
+	  "carTeam": "JGR",
+	  "carManufacturer": "TYT",
+      "carRarity": "4",
+      "carType": "Dominator"
+    },
+	{
+      "carNum": "20",
+	  "carDriver": "Bell",
+	  "carTeam": "JGR",
+	  "carManufacturer": "TYT",
+      "carRarity": "3",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "21",
+	  "carDriver": "DiBenedetto",
+	  "carTeam": "WBR",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "22",
+	  "carDriver": "Logano",
+	  "carTeam": "PEN",
+	  "carManufacturer": "FRD",
+      "carRarity": "3",
+      "carType": "Intimidator"
+    },
+    	{
+      "carNum": "23",
+	  "carDriver": "Wallace",
+	  "carTeam": "23X",
+	  "carManufacturer": "TYT",
+      "carRarity": "2",
+      "carType": "Blocker"
+    },
+	{
+      "carNum": "24",
+	  "carDriver": "Byron",
+	  "carTeam": "HEN",
+	  "carManufacturer": "CHV",
+      "carRarity": "3",
+      "carType": "Dominator"
+    },
+	{
+      "carNum": "33",
+	  "carDriver": "Cindric",
+	  "carTeam": "PEN",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Rookie"
+    },
+	{
+      "carNum": "34",
+	  "carDriver": "McDowell",
+	  "carTeam": "FRM",
+	  "carManufacturer": "FRD",
+      "carRarity": "2",
+      "carType": "Intimidator"
+    },
+    	{
+      "carNum": "36",
+	  "carDriver": "Ragan",
+	  "carTeam": "FRM",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "37",
+	  "carDriver": "Preece",
+	  "carTeam": "JTG",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Blocker"
+    },
+	{
+      "carNum": "38",
+	  "carDriver": "Alfredo",
+	  "carTeam": "FRM",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Rookie"
+    },
+	{
+      "carNum": "41",
+	  "carDriver": "Custer",
+	  "carTeam": "SHR",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Intimidator"
+    },
+	{
+      "carNum": "42",
+	  "carDriver": "Chastain",
+	  "carTeam": "CGR",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "43",
+	  "carDriver": "Jones",
+	  "carTeam": "RPM",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Blocker"
+    },
+    	{
+      "carNum": "47",
+	  "carDriver": "Stenhouse Jr",
+	  "carTeam": "JTG",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "48",
+	  "carDriver": "Bowman",
+	  "carTeam": "HEN",
+	  "carManufacturer": "CHV",
+      "carRarity": "3",
+      "carType": "Blocker"
+    },
+	{
+      "carNum": "51",
+	  "carDriver": "Ware",
+	  "carTeam": "PWR",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Closer"
+    },
+    	{
+      "carNum": "52",
+	  "carDriver": "Bilicki",
+	  "carTeam": "RWR",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "53",
+	  "carDriver": "Smithley",
+	  "carTeam": "RWR",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "62",
+	  "carDriver": "Gragson",
+	  "carTeam": "BEA",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Intimidator"
+    },
+	{
+      "carNum": "66",
+	  "carDriver": "Hill",
+	  "carTeam": "MBM",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Closer"
+    },
+	{
+      "carNum": "77",
+	  "carDriver": "Haley",
+	  "carTeam": "SPI",
+	  "carManufacturer": "CHV",
+      "carRarity": "1",
+      "carType": "Strategist"
+    },
+	{
+      "carNum": "78",
+	  "carDriver": "McLeod",
+	  "carTeam": "BJM",
+	  "carManufacturer": "FRD",
+      "carRarity": "1",
+      "carType": "Blocker"
+    },
+	{
+      "carNum": "96",
+	  "carDriver": "Burton",
+	  "carTeam": "GBR",
+	  "carManufacturer": "TYT",
+      "carRarity": "1",
+      "carType": "Rookie"
+    },
+	{
+      "carNum": "99",
+	  "carDriver": "Suarez",
+	  "carTeam": "TRK",
+	  "carManufacturer": "CHV",
+      "carRarity": "2",
+      "carType": "Strategist"
+    }
+  ]
+}

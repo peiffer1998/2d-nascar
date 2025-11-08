@@ -1,0 +1,406 @@
+import json
+import os
+import random
+import re
+from collections import defaultdict
+
+import pygame
+from dataclasses import dataclass
+
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 720
+FPS = 60
+CUP21_FOLDER = "cup21"
+CUP21_MANIFEST = os.path.join(CUP21_FOLDER, "cup21.txt")
+
+@dataclass
+class TrackPreset:
+    name: str
+    lane_count: int
+    lane_width: float
+    lane_spacing: float
+    pack_rows: int
+    row_gap: float
+    laps: int
+    tagline: str
+
+TRACK_PRESETS = [
+    TrackPreset("3-Lane Oval", lane_count=3, lane_width=210.0, lane_spacing=220.0, pack_rows=6, row_gap=70.0, laps=10, tagline="Wide middle lane, tight draft funnels."),
+    TrackPreset("Superspeedway 5", lane_count=5, lane_width=200.0, lane_spacing=200.0, pack_rows=8, row_gap=65.0, laps=8, tagline="Packed, relentless pace with extra lanes."),
+    TrackPreset("Drafting Tri-Oval", lane_count=4, lane_width=205.0, lane_spacing=210.0, pack_rows=5, row_gap=80.0, laps=6, tagline="Triangle drafting that rewards timing."),
+]
+
+
+@dataclass
+class DriverInfo:
+    car_num: str
+    driver_name: str
+    team: str
+    manufacturer: str
+    rarity: str
+    role: str
+    sprites: list[pygame.Surface]
+
+
+def load_cup21_drivers():
+    if not os.path.isfile(CUP21_MANIFEST):
+        return []
+    try:
+        with open(CUP21_MANIFEST, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    asset_map: dict[str, list[str]] = defaultdict(list)
+    if os.path.isdir(CUP21_FOLDER):
+        for entry in os.listdir(CUP21_FOLDER):
+            if not entry.lower().endswith(".png"):
+                continue
+            match = re.match(r"cup21-(\\d+)", entry)
+            if not match:
+                continue
+            asset_map[match.group(1)].append(os.path.join(CUP21_FOLDER, entry))
+    for asset_list in asset_map.values():
+        asset_list.sort()
+    drivers: list[DriverInfo] = []
+    for driver_data in manifest.get("drivers", []):
+        car_num = driver_data.get("carNum", "").strip()
+        if not car_num:
+            continue
+        sprites = []
+        for asset_path in asset_map.get(car_num, []):
+            try:
+                image = pygame.image.load(asset_path).convert_alpha()
+            except pygame.error:
+                continue
+            sprites.append(pygame.transform.rotate(image, 90))
+        if not sprites:
+            sprites.append(create_placeholder_sprite())
+        drivers.append(
+            DriverInfo(
+                car_num,
+                driver_data.get("carDriver", "Unknown").strip(),
+                driver_data.get("carTeam", "Unknown").strip(),
+                driver_data.get("carManufacturer", "Unknown").strip(),
+                driver_data.get("carRarity", "1").strip(),
+                driver_data.get("carType", "Closer").strip(),
+                sprites,
+            )
+        )
+    return drivers
+
+
+def create_default_driver():
+    return DriverInfo("0", "Player", "Home", "Custom", "1", "Closer", [create_placeholder_sprite()])
+
+
+def create_placeholder_sprite(color=(90, 130, 220)):
+    surf = pygame.Surface((64, 128), pygame.SRCALPHA)
+    body = pygame.Rect(12, 18, 40, 90)
+    pygame.draw.rect(surf, color, body, border_radius=16)
+    pygame.draw.rect(surf, (20, 24, 30), body, width=3, border_radius=16)
+    window = pygame.Rect(18, 26, 28, 28)
+    pygame.draw.rect(surf, (200, 230, 255), window, border_radius=6)
+    pygame.draw.rect(surf, (255, 255, 255), (body.left + 8, body.bottom - 28, 10, 8))
+    pygame.draw.rect(surf, (255, 255, 255), (body.right - 18, body.bottom - 28, 10, 8))
+    return pygame.transform.rotate(surf, 90)
+
+
+class Car:
+    def __init__(self, lane_index, distance, lane_positions, driver):
+        self.lane_positions = lane_positions
+        self.lane_index = lane_index
+        self.distance = distance
+        self.speed = 0.0
+        self.driver = driver
+        self.sprite = random.choice(driver.sprites)
+        self.aggression = random.uniform(0.85, 1.2)
+        self.size = pygame.Vector2(self.sprite.get_size())
+        self.lane_change_timer = 0.0
+
+    def update(self, delta, player_speed):
+        target = player_speed + (self.aggression - 1.0) * 40
+        accel = 480.0 * self.aggression
+        self.speed = move_toward(self.speed, target, accel * delta)
+        self.distance -= (self.speed - player_speed) * delta
+        if self.distance < -200:
+            return True
+        return False
+
+    def draw(self, surface, offset):
+        center_y = self.lane_positions[self.lane_index]
+        x = SCREEN_WIDTH / 2 - (self.distance - offset)
+        rect = self.sprite.get_rect(center=(x, center_y))
+        surface.blit(self.sprite, rect)
+
+
+def move_toward(value, target, step):
+    if value < target:
+        return min(value + step, target)
+    if value > target:
+        return max(value - step, target)
+    return value
+
+
+def build_lane_positions(lane_count, lane_height, lane_spacing):
+    if lane_count <= 0:
+        return []
+    total_height = lane_count * lane_height + max(0, (lane_count - 1) * lane_spacing)
+    top = SCREEN_HEIGHT / 2 - total_height / 2
+    step = lane_height + lane_spacing
+    return [top + step * i + lane_height / 2 for i in range(lane_count)]
+
+
+def draw_track(surface, lane_positions, lane_height, lane_spacing, lane_count, scroll):
+    surface.fill((10, 12, 22))
+    if not lane_positions:
+        return
+    base_y = lane_positions[0] - lane_height / 2
+    track_top = int(base_y - lane_spacing * 0.6 - 26)
+    track_bottom = int(lane_positions[-1] + lane_height / 2 + lane_spacing * 0.6 + 26)
+    track_rect = pygame.Rect(0, track_top, SCREEN_WIDTH, track_bottom - track_top)
+    pygame.draw.rect(surface, (6, 8, 14), track_rect)
+    pygame.draw.rect(surface, (14, 18, 28), (0, track_top - 24, SCREEN_WIDTH, 24))
+    pygame.draw.rect(surface, (14, 18, 28), (0, track_bottom, SCREEN_WIDTH, 24))
+    lane_gap = lane_height + lane_spacing
+    for i in range(lane_count + 1):
+        y = int(base_y + i * lane_gap)
+        pygame.draw.line(surface, (255, 255, 255), (0, y), (SCREEN_WIDTH, y), 3)
+    stripe_spacing = 160
+    stripe_width = 20
+    stripe_height = track_rect.height
+    offset = (scroll * 0.4) % stripe_spacing
+    for i in range(-4, SCREEN_WIDTH // stripe_spacing + 8):
+        x = int(i * stripe_spacing + offset)
+        stripe_rect = pygame.Rect(x, track_top, stripe_width, stripe_height)
+        pygame.draw.rect(surface, (55, 70, 110), stripe_rect)
+
+
+def spawn_pack(lane_positions, preset, drivers):
+    ai = []
+    distance = 220
+    for row in range(preset.pack_rows):
+        lane_indices = random.sample(range(preset.lane_count), min(preset.lane_count, 3))
+        for lane_index in lane_indices:
+            driver = random.choice(drivers) if drivers else create_default_driver()
+            car = Car(lane_index, distance + lane_index * 18, lane_positions, driver)
+            ai.append(car)
+        distance += preset.row_gap
+    return ai
+
+
+def draw_hud(surface, font, player_speed, lap_text, pack_stats, draft_gap, draft_intensity, player_driver):
+    margin = 32
+    panel_height = 170
+    panel_rect = pygame.Rect(margin, SCREEN_HEIGHT - panel_height - margin, SCREEN_WIDTH - margin * 2, panel_height)
+    hud_surface = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+    hud_surface.fill((12, 14, 18, 210))
+    pygame.draw.rect(hud_surface, (255, 255, 255, 18), hud_surface.get_rect(), width=1, border_radius=26)
+    left = 28
+    top = 16
+    speed_text = font.render(f"{int(player_speed):03d} mph", True, (230, 240, 255))
+    lap_text_surface = font.render(lap_text, True, (200, 220, 240))
+    pack_text = font.render(
+        f"Ahead {pack_stats['ahead']} • Behind {pack_stats['behind']} • Lane {pack_stats['lane']}",
+        True,
+        (190, 210, 240),
+    )
+    driver_label = font.render(f"{player_driver.driver_name} #{player_driver.car_num}", True, (230, 240, 255))
+    driver_detail = font.render(
+        f"{player_driver.team} • {player_driver.manufacturer} • {player_driver.role}",
+        True,
+        (190, 210, 240),
+    )
+    hud_surface.blit(speed_text, (left, top))
+    hud_surface.blit(lap_text_surface, (left, top + 38))
+    hud_surface.blit(driver_label, (left, top + 76))
+    hud_surface.blit(driver_detail, (left, top + 110))
+    hud_surface.blit(pack_text, (left, top + 144))
+    meter_width = 240
+    meter_height = 20
+    meter_left = hud_surface.get_width() - meter_width - 28
+    meter_top = 26
+    meter_rect = pygame.Rect(meter_left, meter_top, meter_width, meter_height)
+    pygame.draw.rect(hud_surface, (39, 50, 70), meter_rect, border_radius=11)
+    inner_width = max(0, int((meter_width - 6) * min(1.0, draft_intensity)))
+    if inner_width > 0:
+        inner_rect = pygame.Rect(meter_left + 3, meter_top + 3, inner_width, meter_height - 6)
+        pygame.draw.rect(hud_surface, (100, 215, 255), inner_rect, border_radius=9)
+    draft_label = font.render(f"Draft {int(draft_intensity * 100):02d}%", True, (210, 230, 255))
+    gap_value = int(draft_gap) if draft_gap < 999 else "--"
+    gap_label = font.render(f"Gap {gap_value}m", True, (210, 230, 255))
+    hud_surface.blit(draft_label, (meter_left, meter_top + meter_height + 12))
+    hud_surface.blit(gap_label, (meter_left, meter_top + meter_height + 44))
+    surface.blit(hud_surface, panel_rect.topleft)
+
+
+def gather_pack_stats(ai_cars, player_lane):
+    stats = {"ahead": 0, "behind": 0, "lane": 0, "draft": 0.0}
+    closes_gap = 999
+    for car in ai_cars:
+        gap = car.distance
+        if abs(gap) < 460:
+            stats["draft"] += 0 if gap <= 0 else 1
+        if gap > 0:
+            stats["ahead"] += 1
+            closes_gap = min(closes_gap, gap)
+        else:
+            stats["behind"] += 1
+        if car.lane_index == player_lane and abs(gap) < 400:
+            stats["lane"] += 1
+    nearby = stats["ahead"] + stats["behind"]
+    stats["draft"] = (stats["draft"] / nearby) if nearby else 0.0
+    return stats, closes_gap
+
+
+def compute_draft_intensity(ai_cars, player_lane):
+    min_gap = 999
+    intensity = 0.0
+    for car in ai_cars:
+        if car.lane_index != player_lane:
+            continue
+        gap = car.distance
+        if 0 < gap < 120:
+            intensity = max(intensity, 1.0 - gap / 150)
+            min_gap = min(min_gap, gap)
+    return intensity, min_gap if min_gap < 999 else 999
+
+
+def apply_drafting(ai_cars, draft_distance=110):
+    lanes = {}
+    for car in ai_cars:
+        lanes.setdefault(car.lane_index, []).append(car)
+    for lane_cars in lanes.values():
+        lane_cars.sort(key=lambda c: c.distance)
+        for i in range(len(lane_cars) - 1):
+            lead = lane_cars[i]
+            trail = lane_cars[i + 1]
+            gap = lead.distance - trail.distance
+            if 0 < gap < draft_distance:
+                boost = 20.0 * (1 - gap / draft_distance)
+                trail.speed += boost
+
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    clock = pygame.time.Clock()
+    font = pygame.font.Font(None, 32)
+    title_font = pygame.font.Font(None, 42)
+    accent_font = pygame.font.Font(None, 24)
+    driver_library = load_cup21_drivers()
+    if not driver_library:
+        driver_library = [create_default_driver()]
+    driver_map = {driver.car_num: driver for driver in driver_library}
+    player_driver = driver_map.get("0", driver_library[0])
+    player_sprite = random.choice(player_driver.sprites)
+
+    state = "MENU"
+    selected_track = 0
+    scroll = 0
+
+    active_preset = TRACK_PRESETS[selected_track]
+    lane_positions = build_lane_positions(active_preset.lane_count, active_preset.lane_width, active_preset.lane_spacing)
+    ai_cars = spawn_pack(lane_positions, active_preset, driver_library)
+
+    player_speed = 0.0
+    total_distance = 0.0
+    draft_intensity = 0.0
+    lap_distance = 4200.0
+    current_lap = 1
+
+    running = True
+    while running:
+        delta = clock.tick(FPS) / 1000.0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif state == "MENU" and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_DOWN:
+                    selected_track = (selected_track + 1) % len(TRACK_PRESETS)
+                elif event.key == pygame.K_UP:
+                    selected_track = (selected_track - 1) % len(TRACK_PRESETS)
+                elif event.key == pygame.K_RETURN:
+                    active_preset = TRACK_PRESETS[selected_track]
+                    lane_positions = build_lane_positions(active_preset.lane_count, active_preset.lane_width, active_preset.lane_spacing)
+                    ai_cars = spawn_pack(lane_positions, active_preset, driver_library)
+                    player_speed = 0.0
+                    total_distance = 0.0
+                    draft_intensity = 0.0
+                    current_lap = 1
+                    state = "RACE"
+                elif event.key == pygame.K_ESCAPE:
+                    running = False
+            elif state == "RACE" and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    state = "MENU"
+
+        screen.fill((18, 19, 26))
+        if state == "MENU":
+            title = font.render("2D NASCAR PACK RACING", True, (250, 250, 250))
+            screen.blit(title, (SCREEN_WIDTH / 2 - title.get_width() / 2, 80))
+            for i, preset in enumerate(TRACK_PRESETS):
+                color = (180, 240, 220) if i == selected_track else (110, 140, 160)
+                label = font.render(f"{preset.name} — {preset.tagline}", True, color)
+                screen.blit(label, (SCREEN_WIDTH / 2 - label.get_width() / 2, 200 + i * 40))
+            prompt = font.render("Use ↑/↓ to pick, Enter to start", True, (200, 200, 220))
+            screen.blit(prompt, (SCREEN_WIDTH / 2 - prompt.get_width() / 2, 520))
+        else:
+            keys = pygame.key.get_pressed()
+            brake = keys[pygame.K_DOWN]
+            player_speed = move_toward(player_speed, 560.0 if not brake else 320.0, 760.0 * delta)
+            total_distance += player_speed * delta
+            if total_distance >= lap_distance:
+                total_distance -= lap_distance
+                current_lap = min(current_lap + 1, active_preset.laps)
+            for car in ai_cars[:]:
+                if car.update(delta, player_speed):
+                    ai_cars.remove(car)
+                    ai_cars.append(
+                        Car(
+                            random.randrange(active_preset.lane_count),
+                            random.uniform(420, 1400),
+                            lane_positions,
+                            random.choice(driver_library) if driver_library else create_default_driver(),
+                        )
+                    )
+            apply_drafting(ai_cars)
+            scroll += player_speed * delta
+            draw_track(
+                screen,
+                lane_positions,
+                active_preset.lane_width,
+                active_preset.lane_spacing,
+                active_preset.lane_count,
+                scroll,
+            )
+            for car in ai_cars:
+                car.draw(screen, total_distance)
+            player_lane = max(0, min(len(lane_positions) - 1, active_preset.lane_count // 2))
+            draft_intensity, draft_gap = compute_draft_intensity(ai_cars, player_lane)
+            pack_stats, _ = gather_pack_stats(ai_cars, player_lane)
+            title_surface = title_font.render(active_preset.name, True, (230, 240, 255))
+            tagline_surface = accent_font.render(active_preset.tagline, True, (170, 200, 255))
+            screen.blit(title_surface, (SCREEN_WIDTH / 2 - title_surface.get_width() / 2, 18))
+            screen.blit(tagline_surface, (SCREEN_WIDTH / 2 - tagline_surface.get_width() / 2, 60))
+            center_pos = (SCREEN_WIDTH // 2, int(lane_positions[player_lane]))
+            pygame.draw.circle(screen, (70, 140, 220), center_pos, 64, width=2)
+            player_rect = player_sprite.get_rect(center=center_pos)
+            screen.blit(player_sprite, player_rect)
+            draw_hud(
+                screen,
+                font,
+                player_speed,
+                f"Lap {current_lap}/{active_preset.laps}",
+                pack_stats,
+                draft_gap,
+                draft_intensity,
+                player_driver,
+            )
+            if current_lap >= active_preset.laps and total_distance >= lap_distance * 0.95:
+                result = font.render("Race Completed!", True, (240, 200, 50))
+                screen.blit(result, (SCREEN_WIDTH / 2 - result.get_width() / 2, SCREEN_HEIGHT / 2 + 160))
+        pygame.display.flip()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
